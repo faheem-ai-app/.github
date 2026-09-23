@@ -1,0 +1,4 @@
+# Issue chooser for G2 (bug) and G3 (task). See ../README.md.
+# false = Read/Triage users must pick G2 or G3; Write+ still see "Blank issue".
+# The API and `gh issue create --body-file` are not affected.
+blank_issues_enabled: false
