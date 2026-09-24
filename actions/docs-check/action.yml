@@ -1,0 +1,48 @@
+# Generated from faheem-ai-app/f-infra@bad28821 — edit there, not here
+name: docs-check
+description: >-
+  Run the Faheem docs-drift checker (warn-only) against the current repo. Requires a full-history checkout (fetch-depth: 0) for range mode.
+inputs:
+  mode:
+    description: Check mode (all|range)
+    required: false
+    default: range
+  base:
+    description: Base commit SHA for range mode (the checker diffs from its merge-base with head)
+    required: false
+    default: ''
+  head:
+    description: Head commit SHA for range mode
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Run docs-check
+      shell: bash
+      env:
+        DC_MODE: ${{ inputs.mode }}
+        DC_BASE: ${{ inputs.base }}
+        DC_HEAD: ${{ inputs.head }}
+        DC_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        SCRIPT="$DC_ACTION_PATH/docs-check.py"
+        [ -f "$SCRIPT" ] || SCRIPT="$DC_ACTION_PATH/../../../scripts/docs/docs-check.py"
+        if [ ! -f "$SCRIPT" ]; then
+          echo "::warning::docs-check: script not found next to action or at scripts/docs/docs-check.py, skipping"
+          exit 0
+        fi
+        case "$DC_MODE" in
+          all|range) ;;
+          *) echo "::warning::docs-check: mode input must be all or range, skipping"; exit 0 ;;
+        esac
+        ARGS=(--repo "$GITHUB_WORKSPACE" --warn-only --format github --mode "$DC_MODE")
+        if [ "$DC_MODE" = "range" ]; then
+          sha_re='^[0-9a-fA-F]{7,64}$'
+          if ! [[ "$DC_BASE" =~ $sha_re ]] || ! [[ "$DC_HEAD" =~ $sha_re ]]; then
+            echo "::warning::docs-check: base/head inputs must be commit SHAs, skipping"
+            exit 0
+          fi
+          ARGS+=(--base "$DC_BASE" --head "$DC_HEAD")
+        fi
+        python3 "$SCRIPT" "${ARGS[@]}" || echo "::warning::docs-check: internal error, ignored (warn-only)"
