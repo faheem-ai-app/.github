@@ -1,0 +1,38 @@
+# Generated from faheem-ai-app/f-infra@d7fa3b6e — edit there, not here
+name: require-green-run
+description: >-
+  Refuse a deploy unless the exact commit already has a green full test run on the source branch (test once, promote the result). Reads the GitHub Actions runs API only; needs `actions: read`.
+inputs:
+  evidence:
+    description: >-
+      One spec per line, `<workflow file>: <job>[, <job>...]`. Every spec needs a completed, successful push or workflow_dispatch run of that workflow for this exact SHA on the source branch, with every named job green.
+    required: true
+  source-branch:
+    description: Branch whose runs count as evidence (prod promotes from dev).
+    required: false
+    default: dev
+  sha:
+    description: Commit to check; defaults to the commit this workflow runs on.
+    required: false
+    default: ''
+  token:
+    description: Token with actions:read on this repository.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  run-urls:
+    description: Space-separated URLs of the accepted evidence runs.
+    value: ${{ steps.check.outputs.run-urls }}
+runs:
+  using: composite
+  steps:
+    - name: Require a green run for this exact commit
+      id: check
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        GREEN_RUN_EVIDENCE: ${{ inputs.evidence }}
+        GREEN_RUN_SOURCE_BRANCH: ${{ inputs.source-branch }}
+        GREEN_RUN_SHA: ${{ inputs.sha || github.sha }}
+        GREEN_RUN_ACTION_PATH: ${{ github.action_path }}
+      run: python3 "$GREEN_RUN_ACTION_PATH/require_green_run.py"
