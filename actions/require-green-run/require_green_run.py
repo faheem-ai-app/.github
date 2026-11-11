@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Generated from faheem-ai-app/f-infra@c17a7efe — edit there, not here
+# Generated from faheem-ai-app/f-infra@9143e146 — edit there, not here
 """require-green-run: reuse an earlier green test run instead of testing the same code again.
 
 Test once, promote the result (f-infra docs/plans/test-once-promote-2026-11-11.md). Two modes:
@@ -17,8 +17,9 @@ tree (after a merge on a landing branch): the push of a squash merge re-tests a 
 The PR run is reused only when ALL hold:
   - exactly one merged PR from this repository has this SHA as its merge commit, into this branch;
   - the PR head has the same tree as this SHA, and contains this SHA's first parent (the branch's previous tip);
-  - every PR ever opened from that head branch targets this branch (a run's own PR link is cleared on merge, so this
-    is what ties the run to this branch). The branch only moves forward, so every base those runs were tested
+  - every PR ever opened from that head branch targets this branch and never changed its base (a run's own PR link is
+    cleared on merge, so this is what ties the run to this branch);
+  - the branch has GitHub's force-push protection (a `non_fast_forward` rule), so it really only moves forward. The branch only moves forward, so every base those runs were tested
     against is an ancestor of that parent, which makes GitHub's PR merge ref tree equal to the head tree: the PR
     run tested exactly this tree;
   - a `pull_request` run of each named workflow on the PR head completed `success` with every named job green.
@@ -207,6 +208,16 @@ def reusable_pr_run(fetch, repo: str, sha: str, branch: str, evidence: str) -> l
     """Tree mode: the merged PR's green run tested exactly this tree. Raises EvidenceError on any miss."""
     validate(repo, sha, branch)
     specs = parse_evidence(evidence)
+    # The soundness argument needs a branch that only moves forward: require GitHub to enforce it.
+    rules = fetch(
+        f"repos/{repo}/rules/branches/{urllib.parse.quote(branch, safe='')}?per_page={PER_PAGE}"
+    )
+    if not isinstance(rules, list) or not any(
+        rule.get("type") == "non_fast_forward" for rule in rules
+    ):
+        raise EvidenceError(
+            f"{branch} has no force-push protection (non_fast_forward rule); it could be rewound"
+        )
     pulls = fetch(f"repos/{repo}/commits/{sha}/pulls?per_page={PER_PAGE}")
     if not isinstance(pulls, list):
         raise EvidenceError("the pulls-for-commit response is not a list")
@@ -259,6 +270,16 @@ def reusable_pr_run(fetch, repo: str, sha: str, branch: str, evidence: str) -> l
         raise EvidenceError(
             f"{head_ref} also had PRs into {', '.join(map(str, other_bases))}; its runs may test other bases"
         )
+    # The list above shows each PR's CURRENT base only, and changing a base starts no new run: a PR first opened
+    # against another branch may have been tested there. Any base change on any of them is a miss.
+    for sibling in siblings:
+        events = fetch(f"repos/{repo}/issues/{sibling.get('number')}/events?per_page={PER_PAGE}")
+        if not isinstance(events, list) or len(events) >= PER_PAGE:
+            raise EvidenceError(f"cannot read every event of PR #{sibling.get('number')}")
+        if any(event.get("event") == "base_ref_changed" for event in events):
+            raise EvidenceError(
+                f"PR #{sibling.get('number')} changed its base; its runs may have tested another one"
+            )
     return [
         check_spec(
             fetch,
@@ -278,11 +299,52 @@ REQUIRED_JOBS_RE = re.compile(r"--required-evidence-jobs\s+(\S+)")
 USES_RE = re.compile(r"^(\s*)-?\s*uses:\s*\S*require-green-run(@\S+)?\s*(#.*)?$")
 
 
+def _step_block(lines: list[str], index: int, step_indent: int) -> list[str]:
+    """The lines of the step whose `uses:` is at lines[index], up to the next step or a shallower line."""
+    block: list[str] = []
+    for follow in lines[index + 1 :]:
+        indent = len(follow) - len(follow.lstrip())
+        if follow.strip() and (
+            indent < step_indent or (follow.lstrip().startswith("- ") and indent <= step_indent)
+        ):
+            break
+        block.append(follow)
+    return block
+
+
+def _gate_specs(block: list[str]) -> list[str]:
+    """An exact-mode step's evidence lines; refuses inputs the pre-flight cannot honour (it checks dev, at the SHA)."""
+    for row in block:
+        setting = re.match(r"\s*(source-branch|sha):\s*(.*)$", row)
+        if setting and not (
+            setting.group(1) == "source-branch" and setting.group(2).strip(" '\"") == "dev"
+        ):
+            raise EvidenceError(
+                f"a prod gate sets {setting.group(1)}: {setting.group(2).strip()}; the pre-flight only checks dev"
+            )
+    specs: list[str] = []
+    for pos, row in enumerate(block):
+        key = re.match(r"(\s*)evidence:\s*\|", row)
+        if not key:
+            continue
+        for spec in block[pos + 1 :]:
+            if spec.strip() and len(spec) - len(spec.lstrip()) <= len(key.group(1)):
+                break
+            if spec.strip():
+                specs.append(spec.strip())
+    if not specs:
+        raise EvidenceError(
+            "a prod gate's evidence is not an `evidence: |` block; the pre-flight cannot read it"
+        )
+    return specs
+
+
 def evidence_from_workflows(texts: list[str]) -> str:
     """The prod gates' evidence specs declared in workflow files, for a pre-flight (promote.sh).
 
-    Reads every exact-mode `require-green-run` step's `evidence:` block, and f-brain's `check-promotion.py
+    Reads every exact-mode `require-green-run` step's `evidence: |` block, and f-brain's `check-promotion.py
     --source-workflow X [--required-evidence-jobs a,b]` (default jobs cd,verify). Tree-mode steps are not gates.
+    A gate the parser cannot read faithfully (another evidence form, a non-dev source, a fixed sha) raises.
     """
     specs: list[str] = []
     for text in texts:
@@ -291,27 +353,9 @@ def evidence_from_workflows(texts: list[str]) -> str:
             match = USES_RE.match(line)
             if not match:
                 continue
-            step_indent = len(match.group(1))
-            block: list[str] = []
-            for follow in lines[index + 1 :]:
-                indent = len(follow) - len(follow.lstrip())
-                if follow.strip() and (
-                    indent < step_indent
-                    or (follow.lstrip().startswith("- ") and indent <= step_indent)
-                ):
-                    break
-                block.append(follow)
-            if any(re.match(r"\s*mode:\s*['\"]?tree\b", row) for row in block):
-                continue
-            for pos, row in enumerate(block):
-                key = re.match(r"(\s*)evidence:\s*\|", row)
-                if not key:
-                    continue
-                for spec in block[pos + 1 :]:
-                    if spec.strip() and len(spec) - len(spec.lstrip()) <= len(key.group(1)):
-                        break
-                    if spec.strip():
-                        specs.append(spec.strip())
+            block = _step_block(lines, index, len(match.group(1)))
+            if not any(re.match(r"\s*mode:\s*['\"]?tree\b", row) for row in block):
+                specs.extend(_gate_specs(block))
         for match in CHECK_PROMOTION_RE.finditer(text):
             jobs = REQUIRED_JOBS_RE.search(match.group(2))
             names = (jobs.group(1) if jobs else "cd,verify").split(",")
@@ -402,9 +446,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     if args.evidence_from:
-        args.evidence = evidence_from_workflows(
-            [Path(f).read_text(encoding="utf-8") for f in args.evidence_from]
-        )
+        try:
+            args.evidence = evidence_from_workflows(
+                [Path(f).read_text(encoding="utf-8") for f in args.evidence_from]
+            )
+        except EvidenceError as error:
+            sys.stderr.write(f"::error::Cannot pre-check the prod gate: {error}\n")
+            return 1
         if not args.evidence:
             sys.stdout.write(
                 "No prod green-run gate declared in these workflows; nothing to check.\n"
