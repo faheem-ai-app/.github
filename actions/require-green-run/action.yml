@@ -1,14 +1,18 @@
-# Generated from faheem-ai-app/f-infra@d7fa3b6e — edit there, not here
+# Generated from faheem-ai-app/f-infra@c17a7efe — edit there, not here
 name: require-green-run
 description: >-
-  Refuse a deploy unless the exact commit already has a green full test run on the source branch (test once, promote the result). Reads the GitHub Actions runs API only; needs `actions: read`.
+  Reuse an earlier green test run instead of testing the same code again (test once, promote the result). `exact` (default) refuses a deploy unless the exact commit has a green run on the source branch. `tree` reports whether the merged PR's green run already tested this exact tree (`reused` output); it never fails on a miss. Reads the GitHub API only; needs `actions: read` (tree mode also `pull-requests: read` and `contents: read`).
 inputs:
   evidence:
     description: >-
-      One spec per line, `<workflow file>: <job>[, <job>...]`. Every spec needs a completed, successful push or workflow_dispatch run of that workflow for this exact SHA on the source branch, with every named job green.
+      One spec per line, `<workflow file>: <job>[, <job>...]`. Exact: a completed, successful push or workflow_dispatch run of that workflow for this exact SHA on the source branch, every named job green. Tree: the same, for a pull_request run on the merged PR's head.
     required: true
+  mode:
+    description: exact (prod gate, fails closed) or tree (after a merge on a landing branch, never fails on a miss).
+    required: false
+    default: exact
   source-branch:
-    description: Branch whose runs count as evidence (prod promotes from dev).
+    description: Exact mode, the branch whose runs count (prod promotes from dev). Tree mode, the landing branch.
     required: false
     default: dev
   sha:
@@ -16,21 +20,25 @@ inputs:
     required: false
     default: ''
   token:
-    description: Token with actions:read on this repository.
+    description: Token with the read scopes above on this repository.
     required: false
     default: ${{ github.token }}
 outputs:
+  reused:
+    description: '`true` when green evidence was found (always `true` after a passing exact check).'
+    value: ${{ steps.check.outputs.reused }}
   run-urls:
     description: Space-separated URLs of the accepted evidence runs.
     value: ${{ steps.check.outputs.run-urls }}
 runs:
   using: composite
   steps:
-    - name: Require a green run for this exact commit
+    - name: Look for a green run of this code
       id: check
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.token }}
+        GREEN_RUN_MODE: ${{ inputs.mode }}
         GREEN_RUN_EVIDENCE: ${{ inputs.evidence }}
         GREEN_RUN_SOURCE_BRANCH: ${{ inputs.source-branch }}
         GREEN_RUN_SHA: ${{ inputs.sha || github.sha }}
