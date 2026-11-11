@@ -1,7 +1,7 @@
-# Generated from faheem-ai-app/f-infra@9143e146 — edit there, not here
+# Generated from faheem-ai-app/f-infra@d873b579 — edit there, not here
 name: require-green-run
 description: >-
-  Reuse an earlier green test run instead of testing the same code again (test once, promote the result). `exact` (default) refuses a deploy unless the exact commit has a green run on the source branch. `tree` reports whether the merged PR's green run already tested this exact tree (`reused` output); it never fails on a miss. Reads the GitHub API only; needs `actions: read` (tree mode also `pull-requests: read` and `contents: read`).
+  Reuse an earlier green test run instead of testing the same code again (test once, promote the result). `exact` (default) refuses a deploy unless the exact commit has a green run on the source branch. `tree` reports whether the merged PR's green run already tested this exact tree (`reused` output); it never fails on a miss. Reads the GitHub API only; needs `actions: read`; tree mode also `contents: read`, `issues: read` (PR base changes) and `pull-requests: read`, and the landing branch must have a `non_fast_forward` rule.
 inputs:
   evidence:
     description: >-

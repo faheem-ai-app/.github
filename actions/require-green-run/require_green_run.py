@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Generated from faheem-ai-app/f-infra@9143e146 — edit there, not here
+# Generated from faheem-ai-app/f-infra@d873b579 — edit there, not here
 """require-green-run: reuse an earlier green test run instead of testing the same code again.
 
 Test once, promote the result (f-infra docs/plans/test-once-promote-2026-11-11.md). Two modes:
