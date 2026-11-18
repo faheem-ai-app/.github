@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Generated from faheem-ai-app/f-infra@d873b579 — edit there, not here
+# Generated from faheem-ai-app/f-infra@63f712f1 — edit there, not here
 """require-green-run: reuse an earlier green test run instead of testing the same code again.
 
 Test once, promote the result (f-infra docs/plans/test-once-promote-2026-11-11.md). Two modes:
@@ -71,6 +71,32 @@ def parse_evidence(text: str) -> list[tuple[str, list[str]]]:
             "no evidence configured: at least one '<workflow>.yml: <job>' line is required"
         )
     return specs
+
+
+def _origin(url: str) -> tuple:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme, parts.hostname, parts.port
+
+
+class TokenSafeRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects as urllib does, but the bearer token never leaves the API origin.
+
+    urllib copies Authorization to any redirect target; GitHub answers some API calls with a
+    redirect to another host (artifact and log downloads go to blob storage), so a cross-origin
+    hop must arrive without the token (f-infra#1205 follow-up). Same-origin redirects keep it.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _origin(newurl) != _origin(req.full_url):
+            for name in [h for h in new.headers if h.lower() in {"authorization", "cookie"}]:
+                new.remove_header(name)
+        return new
+
+
+def install_token_safe_opener() -> None:
+    """Make urllib.request.urlopen use TokenSafeRedirect for the rest of this process."""
+    urllib.request.install_opener(urllib.request.build_opener(TokenSafeRedirect()))
 
 
 def fetch_json(api_url: str, path: str, token: str) -> dict | list:
@@ -461,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
 
     token = os.environ.get("GITHUB_TOKEN", "")
     api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+    install_token_safe_opener()
 
     def fetch(path):
         return fetch_json(api_url, path, token)
